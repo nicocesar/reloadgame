@@ -13,10 +13,11 @@ import (
 )
 
 type SessionData struct {
-	HasWon       bool          `json:"has_won"`
-	Ending1Count int           `json:"ending1_count"`
-	Visits       int           `json:"visits"`
-	LastVisit    time.Time     `json:"last_visit"`
+	HasWon       bool      `json:"has_won"`
+	Ending1Count int       `json:"ending1_count"`
+	Ending2Count int       `json:"ending2_count"`
+	Visits       int       `json:"visits"`
+	LastVisit    time.Time `json:"last_visit"`
 }
 
 var (
@@ -83,6 +84,7 @@ func saveSession(w http.ResponseWriter, session *SessionData) {
 }
 
 func isDirectAccess(r *http.Request) bool {
+	log.Printf("Sec-Fetch-Site: %s, Cache-Control: %s, Referer: %s", r.Header.Get("Sec-Fetch-Site"), r.Header.Get("Cache-Control"), r.Header.Get("Referer"))
 	fetchSite := r.Header.Get("Sec-Fetch-Site")
 	if fetchSite != "" {
 		if fetchSite != "none" {
@@ -107,9 +109,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session := getSession(r)
-	directAccess := isDirectAccess(r)
 
-	if session == nil || directAccess {
+	if session == nil {
 		session = &SessionData{
 			Visits:    1,
 			LastVisit: time.Now(),
@@ -122,10 +123,19 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	session.Visits++
 	session.LastVisit = time.Now()
 
-	if !session.HasWon {
-		session.HasWon = true
-		session.Ending1Count++
+	if session.HasWon {
+		session.Ending2Count++
+		saveSession(w, session)
+		if session.Ending2Count > 1 {
+			tmpl.Execute(w, map[string]string{"Message": "You lose " + strconv.Itoa(session.Ending2Count) + " times! (Ending 2)"})
+		} else {
+			tmpl.Execute(w, map[string]string{"Message": "You lose! (Ending 2)"})
+		}
+		return
 	}
+
+	session.HasWon = true
+	session.Ending1Count++
 
 	saveSession(w, session)
 	tmpl.Execute(w, map[string]string{"Message": "Congratulations you won the game (Ending 1)!"})
@@ -148,6 +158,6 @@ func main() {
 	}
 	defer ln.Close()
 
-	log.Printf("listening on http://localhost%s", addr)
+	log.Printf("listening on http://0.0.0.0%s", addr)
 	log.Fatal(http.Serve(ln, http.HandlerFunc(handler)))
 }
