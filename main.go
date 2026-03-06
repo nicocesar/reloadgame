@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"log"
 	"net"
@@ -89,20 +90,28 @@ func saveSession(w http.ResponseWriter, session *SessionData) {
 	})
 }
 
-func recordEnding(ending int) {
+func recordEnding(ending int) error {
+	if ending < 1 || ending > 2 {
+		return fmt.Errorf("invalid ending: %d", ending)
+	}
+
 	metricsMu.Lock()
 	defer metricsMu.Unlock()
 
 	key := "Ending" + strconv.Itoa(ending)
 	var timestamps []time.Time
 
-	item := new([]time.Time)
-	found, err := metrics.Get(key, item)
-	if err == nil && found {
-		timestamps = *item
+	var item []time.Time
+	found, err := metrics.Get(key, &item)
+	if err != nil {
+		return err
+	}
+	if found {
+		timestamps = item
 	}
 	timestamps = append(timestamps, time.Now())
 	metrics.Set(key, timestamps)
+	return nil
 }
 
 func metricsHandler(w http.ResponseWriter, r *http.Request) {
@@ -121,15 +130,17 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var records []endingRecord
 
-	for ending := 1; ending <= 2; ending++ {
+	for _, ending := range []int{1, 2} {
 		key := "Ending" + strconv.Itoa(ending)
-		item := new([]time.Time)
-		found, err := metrics.Get(key, item)
-		if err != nil || !found {
+		var item []time.Time
+		found, err := metrics.Get(key, &item)
+		if err != nil {
 			continue
 		}
-		timestamps := *item
-		for _, ts := range timestamps {
+		if !found {
+			continue
+		}
+		for _, ts := range item {
 			records = append(records, endingRecord{
 				Timestamp: ts,
 				Ending:    ending,
@@ -188,7 +199,9 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	if session.HasWon {
 		session.Ending2Count++
-		recordEnding(2)
+		if err := recordEnding(2); err != nil {
+			log.Printf("Error recording ending 2: %v", err)
+		}
 		saveSession(w, session)
 		if session.Ending2Count > 1 {
 			tmpl.Execute(w, map[string]string{"Message": "You lose " + strconv.Itoa(session.Ending2Count) + " times! (Ending 2)"})
@@ -200,7 +213,9 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	session.HasWon = true
 	session.Ending1Count++
-	recordEnding(1)
+	if err := recordEnding(1); err != nil {
+		log.Printf("Error recording ending 1: %v", err)
+	}
 
 	saveSession(w, session)
 	tmpl.Execute(w, map[string]string{"Message": "Congratulations you won the game (Ending 1)!"})
