@@ -128,7 +128,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		Ending    int       `json:"ending"`
 	}
 
-	var records []endingRecord
+	records := []endingRecord{}
 
 	for _, ending := range []int{1, 2} {
 		key := "Ending" + strconv.Itoa(ending)
@@ -148,8 +148,16 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	response := struct {
+		Total int            `json:"total"`
+		Data  []endingRecord `json:"data"`
+	}{
+		Total: len(records),
+		Data:  records,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(records)
+	json.NewEncoder(w).Encode(response)
 }
 
 func isDirectAccess(r *http.Request) bool {
