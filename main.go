@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"log"
 	"net"
 	"net/http"
@@ -25,9 +24,16 @@ type SessionData struct {
 	LastVisit    time.Time `json:"last_visit"`
 }
 
+type navCheckRequest struct {
+	Type string `json:"type"`
+}
+
+type navCheckResponse struct {
+	Message string `json:"message"`
+}
+
 var (
 	cookieName = "reloadgame_session"
-	tmpl       = template.Must(template.New("page").Parse(pageTemplate))
 	metrics    gokv.Store
 	metricsMu  sync.Mutex
 )
@@ -47,11 +53,39 @@ const pageTemplate = `<!DOCTYPE html>
 		}
 		h1 {
 			text-align: center;
+			opacity: 0;
+			transition: opacity 0.3s ease-in;
+		}
+		h1.visible {
+			opacity: 1;
 		}
 	</style>
 </head>
 <body>
-	<h1>{{.Message}}</h1>
+	<h1 id="msg"></h1>
+	<noscript><h1 style="opacity:1">JavaScript is required to play this game.</h1></noscript>
+	<script>
+		(function() {
+			var navType = 'navigate';
+			try {
+				var entry = performance.getEntriesByType('navigation')[0];
+				if (entry && entry.type) {
+					navType = entry.type;
+				}
+			} catch(e) {}
+			fetch('/nav-check', {
+				method: 'POST',
+				headers: {'Content-Type': 'application/json'},
+				body: JSON.stringify({type: navType})
+			})
+			.then(function(r) { return r.json(); })
+			.then(function(data) {
+				var el = document.getElementById('msg');
+				el.textContent = data.message;
+				el.classList.add('visible');
+			});
+		})();
+	</script>
 </body>
 </html>`
 
@@ -82,11 +116,17 @@ func saveSession(w http.ResponseWriter, session *SessionData) {
 
 	encoded := base64.URLEncoding.EncodeToString(data)
 
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("Surrogate-Control", "no-store")
+
 	http.SetCookie(w, &http.Cookie{
-		Name:    cookieName,
-		Value:   encoded,
-		Path:    "/",
-		Expires: time.Now().Add(24 * time.Hour),
+		Name:     cookieName,
+		Value:    encoded,
+		Path:     "/",
+		Expires:  time.Now().Add(24 * time.Hour),
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
@@ -115,11 +155,6 @@ func recordEnding(ending int) error {
 }
 
 func metricsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/metrics/endings" {
-		http.NotFound(w, r)
-		return
-	}
-
 	metricsMu.Lock()
 	defer metricsMu.Unlock()
 
@@ -160,73 +195,79 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-func isDirectAccess(r *http.Request) bool {
-	log.Printf("Sec-Fetch-Site: %s, Cache-Control: %s, Referer: %s", r.Header.Get("Sec-Fetch-Site"), r.Header.Get("Cache-Control"), r.Header.Get("Referer"))
-	fetchSite := r.Header.Get("Sec-Fetch-Site")
-	if fetchSite != "" {
-		if fetchSite != "none" {
-			return false
-		}
-		// Both direct navigation and reload send Sec-Fetch-Site: none.
-		// Reloads also send Cache-Control: max-age=0 (soft) or no-cache (hard).
-		cc := r.Header.Get("Cache-Control")
-		if cc == "max-age=0" || cc == "no-cache" {
-			return false
-		}
-		return true
+func handler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
 	}
-	// Fallback for browsers without Sec-Fetch-Site support
-	return r.Header.Get("Referer") == ""
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, pageTemplate)
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/metrics/endings" {
-		metricsHandler(w, r)
+func navCheckHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+	var req navCheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
 	session := getSession(r)
 
-	if session == nil {
+	var message string
+
+	if req.Type != "reload" {
+		// Direct access (typed URL, bookmark, link) — reset session
 		session = &SessionData{
 			Visits:    1,
 			LastVisit: time.Now(),
 		}
 		saveSession(w, session)
-		tmpl.Execute(w, map[string]string{"Message": "Reload this page"})
-		return
-	}
-
-	session.Visits++
-	session.LastVisit = time.Now()
-
-	if session.HasWon {
+		message = "Reload this page"
+	} else if session == nil {
+		// First visit via reload (unlikely but handle it)
+		session = &SessionData{
+			Visits:    1,
+			LastVisit: time.Now(),
+		}
+		saveSession(w, session)
+		message = "Reload this page"
+	} else if !session.HasWon {
+		// Reload with session, not yet won — win!
+		session.Visits++
+		session.LastVisit = time.Now()
+		session.HasWon = true
+		session.Ending1Count++
+		if err := recordEnding(1); err != nil {
+			log.Printf("Error recording ending 1: %v", err)
+		}
+		saveSession(w, session)
+		message = "Congratulations you won the game (Ending 1)!"
+	} else {
+		// Reload with session, already won — lose
+		session.Visits++
+		session.LastVisit = time.Now()
 		session.Ending2Count++
 		if err := recordEnding(2); err != nil {
 			log.Printf("Error recording ending 2: %v", err)
 		}
 		saveSession(w, session)
 		if session.Ending2Count > 1 {
-			tmpl.Execute(w, map[string]string{"Message": "You lose " + strconv.Itoa(session.Ending2Count) + " times! (Ending 2)"})
+			message = "You lose " + strconv.Itoa(session.Ending2Count) + " times! (Ending 2)"
 		} else {
-			tmpl.Execute(w, map[string]string{"Message": "You lose! (Ending 2)"})
+			message = "You lose! (Ending 2)"
 		}
-		return
 	}
 
-	session.HasWon = true
-	session.Ending1Count++
-	if err := recordEnding(1); err != nil {
-		log.Printf("Error recording ending 1: %v", err)
-	}
-
-	saveSession(w, session)
-	tmpl.Execute(w, map[string]string{"Message": "Congratulations you won the game (Ending 1)!"})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(navCheckResponse{Message: message})
 }
 
 func main() {
@@ -248,6 +289,11 @@ func main() {
 	}
 	defer ln.Close()
 
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handler)
+	mux.HandleFunc("/nav-check", navCheckHandler)
+	mux.HandleFunc("/metrics/endings", metricsHandler)
+
 	log.Printf("listening on http://0.0.0.0%s", addr)
-	log.Fatal(http.Serve(ln, http.HandlerFunc(handler)))
+	log.Fatal(http.Serve(ln, mux))
 }
