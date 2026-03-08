@@ -1,12 +1,158 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/philippgille/gokv/syncmap"
 )
+
+func TestNavCheckHandler(t *testing.T) {
+	tests := []struct {
+		name        string
+		navType     string
+		session     *SessionData
+		wantMessage string
+	}{
+		{
+			name:        "reload with no session returns reload message",
+			navType:     "reload",
+			session:     nil,
+			wantMessage: "Reload this page",
+		},
+		{
+			name:    "reload with session not won returns ending 1",
+			navType: "reload",
+			session: &SessionData{
+				Visits:    1,
+				LastVisit: time.Now(),
+			},
+			wantMessage: "Congratulations you won the game (Ending 1)!",
+		},
+		{
+			name:    "reload with session already won returns ending 2",
+			navType: "reload",
+			session: &SessionData{
+				HasWon:    true,
+				Visits:    2,
+				LastVisit: time.Now(),
+			},
+			wantMessage: "You lose! (Ending 2)",
+		},
+		{
+			name:    "reload with session already won multiple times",
+			navType: "reload",
+			session: &SessionData{
+				HasWon:       true,
+				Ending2Count: 1,
+				Visits:       3,
+				LastVisit:    time.Now(),
+			},
+			wantMessage: "You lose 2 times! (Ending 2)",
+		},
+		{
+			name:    "navigate with session resets to reload message",
+			navType: "navigate",
+			session: &SessionData{
+				HasWon:    true,
+				Visits:    5,
+				LastVisit: time.Now(),
+			},
+			wantMessage: "Reload this page",
+		},
+		{
+			name:        "navigate with no session returns reload message",
+			navType:     "navigate",
+			session:     nil,
+			wantMessage: "Reload this page",
+		},
+		{
+			name:    "empty type treated as direct access",
+			navType: "",
+			session: &SessionData{
+				HasWon:    true,
+				Visits:    2,
+				LastVisit: time.Now(),
+			},
+			wantMessage: "Reload this page",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+			body, _ := json.Marshal(navCheckRequest{Type: tt.navType})
+			req := httptest.NewRequest(http.MethodPost, "/nav-check", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			if tt.session != nil {
+				// Set session cookie on request
+				rec := httptest.NewRecorder()
+				saveSession(rec, tt.session)
+				for _, c := range rec.Result().Cookies() {
+					req.AddCookie(c)
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			navCheckHandler(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d", rec.Code)
+			}
+
+			var resp navCheckResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+
+			if resp.Message != tt.wantMessage {
+				t.Errorf("message = %q, want %q", resp.Message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestNavCheckHandlerMethodNotAllowed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/nav-check", nil)
+	rec := httptest.NewRecorder()
+	navCheckHandler(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status 405, got %d", rec.Code)
+	}
+}
+
+func TestHandlerServesHTML(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	ct := rec.Header().Get("Content-Type")
+	if ct != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
+	}
+	// Should not set a session cookie
+	if len(rec.Result().Cookies()) != 0 {
+		t.Error("handler should not set cookies")
+	}
+}
+
+func TestHandlerReturns404ForOtherPaths(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/foo", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", rec.Code)
+	}
+}
 
 func TestRecordEnding(t *testing.T) {
 	metrics = syncmap.NewStore(syncmap.DefaultOptions)
