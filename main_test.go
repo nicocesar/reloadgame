@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -256,5 +255,77 @@ func TestRecordEndingMetricsStored(t *testing.T) {
 	}
 	if len(timestamps2) != 1 {
 		t.Errorf("Expected 1 timestamp for Ending2, got %d", len(timestamps2))
+	}
+}
+
+func TestMetricsHandlerOutputFormat(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	if err := recordEnding(1); err != nil {
+		t.Fatalf("recordEnding(1) unexpected error: %v", err)
+	}
+	if err := recordEnding(2); err != nil {
+		t.Fatalf("recordEnding(2) unexpected error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics/endings", nil)
+	rr := httptest.NewRecorder()
+	metricsHandler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	var response struct {
+		Total int `json:"total"`
+		Data  []struct {
+			Timestamp time.Time `json:"timestamp"`
+			Ending    int       `json:"ending"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if response.Total != 2 {
+		t.Errorf("Expected total to be 2, got %d", response.Total)
+	}
+	if len(response.Data) != 2 {
+		t.Errorf("Expected data length to be 2, got %d", len(response.Data))
+	}
+}
+
+func TestMetricsHandlerZeroData(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics/endings", nil)
+	rr := httptest.NewRecorder()
+	metricsHandler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	var response struct {
+		Total int `json:"total"`
+		Data  []struct {
+			Timestamp time.Time `json:"timestamp"`
+			Ending    int       `json:"ending"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if response.Total != 0 {
+		t.Errorf("Expected total to be 0, got %d", response.Total)
+	}
+	if response.Data == nil {
+		t.Error("Expected data to be an empty array, got nil")
+	}
+	if len(response.Data) != 0 {
+		t.Errorf("Expected data length to be 0, got %d", len(response.Data))
 	}
 }
