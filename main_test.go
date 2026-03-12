@@ -329,3 +329,64 @@ func TestMetricsHandlerZeroData(t *testing.T) {
 		t.Errorf("Expected data length to be 0, got %d", len(response.Data))
 	}
 }
+
+func TestMetricsHandlerAuth(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	t.Run("no token configured allows access", func(t *testing.T) {
+		metricsAuthToken = ""
+		req := httptest.NewRequest(http.MethodGet, "/metrics/endings", nil)
+		rr := httptest.NewRecorder()
+		metricsHandler(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("Expected status %d, got %d", http.StatusOK, rr.Code)
+		}
+	})
+
+	t.Run("token configured, no Authorization header returns 401", func(t *testing.T) {
+		metricsAuthToken = "secret"
+		defer func() { metricsAuthToken = "" }()
+		req := httptest.NewRequest(http.MethodGet, "/metrics/endings", nil)
+		rr := httptest.NewRecorder()
+		metricsHandler(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("Expected status %d, got %d", http.StatusUnauthorized, rr.Code)
+		}
+	})
+
+	t.Run("token configured, wrong token returns 401", func(t *testing.T) {
+		metricsAuthToken = "secret"
+		defer func() { metricsAuthToken = "" }()
+		req := httptest.NewRequest(http.MethodGet, "/metrics/endings", nil)
+		req.Header.Set("Authorization", "Bearer wrongtoken")
+		rr := httptest.NewRecorder()
+		metricsHandler(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("Expected status %d, got %d", http.StatusUnauthorized, rr.Code)
+		}
+	})
+
+	t.Run("token configured, non-Bearer scheme returns 401", func(t *testing.T) {
+		metricsAuthToken = "secret"
+		defer func() { metricsAuthToken = "" }()
+		req := httptest.NewRequest(http.MethodGet, "/metrics/endings", nil)
+		req.Header.Set("Authorization", "Basic secret")
+		rr := httptest.NewRecorder()
+		metricsHandler(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("Expected status %d, got %d", http.StatusUnauthorized, rr.Code)
+		}
+	})
+
+	t.Run("token configured, correct token returns 200", func(t *testing.T) {
+		metricsAuthToken = "secret"
+		defer func() { metricsAuthToken = "" }()
+		req := httptest.NewRequest(http.MethodGet, "/metrics/endings", nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		rr := httptest.NewRecorder()
+		metricsHandler(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("Expected status %d, got %d", http.StatusOK, rr.Code)
+		}
+	})
+}
