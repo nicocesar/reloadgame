@@ -20,6 +20,7 @@ type SessionData struct {
 	HasWon       bool      `json:"has_won"`
 	Ending1Count int       `json:"ending1_count"`
 	Ending2Count int       `json:"ending2_count"`
+	Ending3Count int       `json:"ending3_count"`
 	Visits       int       `json:"visits"`
 	LastVisit    time.Time `json:"last_visit"`
 }
@@ -29,7 +30,8 @@ type navCheckRequest struct {
 }
 
 type navCheckResponse struct {
-	Message string `json:"message"`
+	Message     string `json:"message"`
+	ShowClickMe bool   `json:"show_click_me,omitempty"`
 }
 
 var (
@@ -51,18 +53,34 @@ const pageTemplate = `<!DOCTYPE html>
 			margin: 0;
 			font-family: Arial, sans-serif;
 		}
-		h1 {
+		.container {
 			text-align: center;
 			opacity: 0;
 			transition: opacity 0.3s ease-in;
 		}
-		h1.visible {
+		.container.visible {
 			opacity: 1;
+		}
+		h1 {
+			margin-bottom: 0.2em;
+		}
+		.click-me {
+			font-size: 0.6em;
+			color: #888;
+			cursor: pointer;
+			text-decoration: none;
+		}
+		.click-me:hover {
+			color: #555;
+			text-decoration: underline;
 		}
 	</style>
 </head>
 <body>
-	<h1 id="msg"></h1>
+	<div class="container" id="content">
+		<h1 id="msg"></h1>
+		<a id="click-me" class="click-me" href="/congratulations" style="display:none">(or click on me)</a>
+	</div>
 	<noscript><h1 style="opacity:1">JavaScript is required to play this game.</h1></noscript>
 	<script>
 		(function() {
@@ -82,8 +100,61 @@ const pageTemplate = `<!DOCTYPE html>
 			.then(function(data) {
 				var el = document.getElementById('msg');
 				el.textContent = data.message;
-				el.classList.add('visible');
+				if (data.show_click_me) {
+					document.getElementById('click-me').style.display = '';
+				}
+				document.getElementById('content').classList.add('visible');
 			});
+		})();
+	</script>
+</body>
+</html>`
+
+const congratulationsTemplate = `<!DOCTYPE html>
+<html>
+<head>
+	<title>Reload Game - Congratulations!</title>
+	<style>
+		body {
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			height: 100vh;
+			margin: 0;
+			font-family: Arial, sans-serif;
+		}
+		.container {
+			text-align: center;
+			opacity: 0;
+			transition: opacity 0.3s ease-in;
+		}
+		.container.visible {
+			opacity: 1;
+		}
+		h1 {
+			margin-bottom: 0.2em;
+		}
+	</style>
+</head>
+<body>
+	<div class="container" id="content">
+		<h1>Congratulations! (Ending 3)</h1>
+	</div>
+	<script>
+		(function() {
+			var navType = 'navigate';
+			try {
+				var entry = performance.getEntriesByType('navigation')[0];
+				if (entry && entry.type) {
+					navType = entry.type;
+				}
+			} catch(e) {}
+			if (navType === 'reload') {
+				window.location.replace('/');
+				return;
+			}
+			var el = document.getElementById('content');
+			el.classList.add('visible');
 		})();
 	</script>
 </body>
@@ -131,7 +202,7 @@ func saveSession(w http.ResponseWriter, session *SessionData) {
 }
 
 func recordEnding(ending int) error {
-	if ending < 1 || ending > 2 {
+	if ending < 1 || ending > 3 {
 		return fmt.Errorf("invalid ending: %d", ending)
 	}
 
@@ -165,7 +236,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 
 	records := []endingRecord{}
 
-	for _, ending := range []int{1, 2} {
+	for _, ending := range []int{1, 2, 3} {
 		key := "Ending" + strconv.Itoa(ending)
 		var item []time.Time
 		found, err := metrics.Get(key, &item)
@@ -193,6 +264,38 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func congratulationsHandler(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r)
+
+	// Only accessible if user has both ending 1 and 2
+	if session == nil || session.Ending1Count < 1 || session.Ending2Count < 1 {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+
+	// Record ending 3 and update session
+	session.Visits++
+	session.LastVisit = time.Now()
+	session.Ending3Count++
+	if err := recordEnding(3); err != nil {
+		log.Printf("Error recording ending 3: %v", err)
+	}
+
+	// Reset session so reloading goes back to "Reload this page"
+	// but preserve the ending counts so "(or click on me)" remains
+	resetSession := &SessionData{
+		Ending1Count: session.Ending1Count,
+		Ending2Count: session.Ending2Count,
+		Ending3Count: session.Ending3Count,
+		Visits:       session.Visits,
+		LastVisit:     session.LastVisit,
+	}
+	saveSession(w, resetSession)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, congratulationsTemplate)
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -225,10 +328,17 @@ func navCheckHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.Type != "reload" {
 		// Direct access (typed URL, bookmark, link) — reset session
-		session = &SessionData{
+		// Preserve ending counts so "(or click on me)" remains available
+		newSession := &SessionData{
 			Visits:    1,
 			LastVisit: time.Now(),
 		}
+		if session != nil {
+			newSession.Ending1Count = session.Ending1Count
+			newSession.Ending2Count = session.Ending2Count
+			newSession.Ending3Count = session.Ending3Count
+		}
+		session = newSession
 		saveSession(w, session)
 		message = "Reload this page"
 	} else if session == nil {
@@ -266,8 +376,15 @@ func navCheckHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	resp := navCheckResponse{Message: message}
+	// Show "(or click on me)" when user has completed both ending 1 and 2
+	// and is on a "Reload this page" screen
+	if message == "Reload this page" && session != nil && session.Ending1Count >= 1 && session.Ending2Count >= 1 {
+		resp.ShowClickMe = true
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(navCheckResponse{Message: message})
+	json.NewEncoder(w).Encode(resp)
 }
 
 func main() {
@@ -292,6 +409,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handler)
 	mux.HandleFunc("/nav-check", navCheckHandler)
+	mux.HandleFunc("/congratulations", congratulationsHandler)
 	mux.HandleFunc("/metrics/endings", metricsHandler)
 
 	log.Printf("listening on http://0.0.0.0%s", addr)
