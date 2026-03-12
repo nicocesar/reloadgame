@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -185,10 +187,9 @@ func TestRecordEnding(t *testing.T) {
 			errorMsg:  "invalid ending: -42",
 		},
 		{
-			name:      "invalid ending 3",
+			name:      "valid ending 3",
 			ending:    3,
-			wantError: true,
-			errorMsg:  "invalid ending: 3",
+			wantError: false,
 		},
 		{
 			name:      "invalid ending MAXINT",
@@ -389,4 +390,302 @@ func TestMetricsHandlerAuth(t *testing.T) {
 			t.Errorf("Expected status %d, got %d", http.StatusOK, rr.Code)
 		}
 	})
+func TestNavCheckShowClickMeWhenBothEndingsDone(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	// Session with both ending 1 and ending 2 completed
+	session := &SessionData{
+		HasWon:       false, // reset by navigate
+		Ending1Count: 1,
+		Ending2Count: 1,
+		Visits:       3,
+		LastVisit:    time.Now(),
+	}
+
+	body, _ := json.Marshal(navCheckRequest{Type: "navigate"})
+	req := httptest.NewRequest(http.MethodPost, "/nav-check", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	saveSession(rec, session)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rec = httptest.NewRecorder()
+	navCheckHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var resp navCheckResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Message != "Reload this page" {
+		t.Errorf("message = %q, want %q", resp.Message, "Reload this page")
+	}
+	if !resp.ShowClickMe {
+		t.Error("expected show_click_me to be true when both endings are done")
+	}
+}
+
+func TestNavCheckNoClickMeWithoutBothEndings(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	tests := []struct {
+		name    string
+		session *SessionData
+	}{
+		{
+			name: "only ending 1 done",
+			session: &SessionData{
+				Ending1Count: 1,
+				Ending2Count: 0,
+				Visits:       2,
+				LastVisit:    time.Now(),
+			},
+		},
+		{
+			name: "only ending 2 done",
+			session: &SessionData{
+				Ending1Count: 0,
+				Ending2Count: 1,
+				HasWon:       true,
+				Visits:       2,
+				LastVisit:    time.Now(),
+			},
+		},
+		{
+			name:    "no session",
+			session: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(navCheckRequest{Type: "navigate"})
+			req := httptest.NewRequest(http.MethodPost, "/nav-check", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			if tt.session != nil {
+				rec := httptest.NewRecorder()
+				saveSession(rec, tt.session)
+				for _, c := range rec.Result().Cookies() {
+					req.AddCookie(c)
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			navCheckHandler(rec, req)
+
+			var resp navCheckResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+
+			if resp.ShowClickMe {
+				t.Error("expected show_click_me to be false")
+			}
+		})
+	}
+}
+
+func TestCongratulationsHandlerEnding3(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	// Session with both endings done
+	session := &SessionData{
+		Ending1Count: 1,
+		Ending2Count: 1,
+		Visits:       3,
+		LastVisit:    time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/congratulations", nil)
+	rec := httptest.NewRecorder()
+	saveSession(rec, session)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rec = httptest.NewRecorder()
+	congratulationsHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Congratulations! (Ending 3)") {
+		t.Error("expected congratulations page to contain 'Congratulations! (Ending 3)'")
+	}
+
+	// Verify session was updated - should have ending3 count and be reset (HasWon=false)
+	var updatedSession SessionData
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == cookieName {
+			req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+			req2.AddCookie(c)
+			s := getSession(req2)
+			if s != nil {
+				updatedSession = *s
+			}
+		}
+	}
+
+	if updatedSession.Ending3Count != 1 {
+		t.Errorf("expected Ending3Count=1, got %d", updatedSession.Ending3Count)
+	}
+	if updatedSession.HasWon {
+		t.Error("expected HasWon to be false after congratulations (reset for next reload)")
+	}
+	if updatedSession.Ending1Count != 1 {
+		t.Errorf("expected Ending1Count preserved at 1, got %d", updatedSession.Ending1Count)
+	}
+	if updatedSession.Ending2Count != 1 {
+		t.Errorf("expected Ending2Count preserved at 1, got %d", updatedSession.Ending2Count)
+	}
+}
+
+func TestCongratulationsHandlerRedirectsWithoutEndings(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	tests := []struct {
+		name    string
+		session *SessionData
+	}{
+		{
+			name:    "no session",
+			session: nil,
+		},
+		{
+			name: "only ending 1",
+			session: &SessionData{
+				Ending1Count: 1,
+				Ending2Count: 0,
+			},
+		},
+		{
+			name: "only ending 2",
+			session: &SessionData{
+				Ending1Count: 0,
+				Ending2Count: 1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/congratulations", nil)
+
+			if tt.session != nil {
+				rec := httptest.NewRecorder()
+				saveSession(rec, tt.session)
+				for _, c := range rec.Result().Cookies() {
+					req.AddCookie(c)
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			congratulationsHandler(rec, req)
+
+			if rec.Code != http.StatusFound {
+				t.Errorf("expected redirect (302), got %d", rec.Code)
+			}
+			loc := rec.Header().Get("Location")
+			if loc != "/" {
+				t.Errorf("expected redirect to /, got %q", loc)
+			}
+		})
+	}
+}
+
+func TestCongratulationsHandlerMultipleEnding3(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	session := &SessionData{
+		Ending1Count: 1,
+		Ending2Count: 1,
+		Visits:       3,
+		LastVisit:    time.Now(),
+	}
+
+	// Hit congratulations twice
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/congratulations", nil)
+		rec := httptest.NewRecorder()
+		saveSession(rec, session)
+		for _, c := range rec.Result().Cookies() {
+			req.AddCookie(c)
+		}
+
+		rec = httptest.NewRecorder()
+		congratulationsHandler(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("iteration %d: expected status 200, got %d", i, rec.Code)
+		}
+
+		// Update session from response cookie for next iteration
+		for _, c := range rec.Result().Cookies() {
+			if c.Name == cookieName {
+				req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+				req2.AddCookie(c)
+				session = getSession(req2)
+			}
+		}
+	}
+
+	if session.Ending3Count != 2 {
+		t.Errorf("expected Ending3Count=2 after two visits, got %d", session.Ending3Count)
+	}
+}
+
+func TestMetricsHandlerIncludesEnding3(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	if err := recordEnding(1); err != nil {
+		t.Fatalf("recordEnding(1) unexpected error: %v", err)
+	}
+	if err := recordEnding(2); err != nil {
+		t.Fatalf("recordEnding(2) unexpected error: %v", err)
+	}
+	if err := recordEnding(3); err != nil {
+		t.Fatalf("recordEnding(3) unexpected error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics/endings", nil)
+	rr := httptest.NewRecorder()
+	metricsHandler(rr, req)
+
+	var response struct {
+		Total int `json:"total"`
+		Data  []struct {
+			Timestamp time.Time `json:"timestamp"`
+			Ending    int       `json:"ending"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if response.Total != 3 {
+		t.Errorf("Expected total to be 3, got %d", response.Total)
+	}
+
+	// Check ending 3 is present
+	foundEnding3 := false
+	for _, d := range response.Data {
+		if d.Ending == 3 {
+			foundEnding3 = true
+			break
+		}
+	}
+	if !foundEnding3 {
+		t.Error("Expected to find ending 3 in metrics data")
+	}
 }
