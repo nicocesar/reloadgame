@@ -585,6 +585,474 @@ func TestCongratulationsHandlerMultipleEnding3(t *testing.T) {
 	}
 }
 
+func TestIsValidName(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"empty string", "", false},
+		{"simple ascii name", "Alice", true},
+		{"name with accent", "Nicolás", true},
+		{"chinese nickname", "张", true},
+		{"apostrophe in last name", "O'Brian", true},
+		{"curly apostrophe", "O\u2019Brian", true},
+		{"full example", "Nicolás \"张\" O'Brian", true},
+		{"name with space", "Jean Pierre", true},
+		{"name with hyphen", "Jean-Pierre", true},
+		{"name with period", "St. Claire", true},
+		{"arabic letters", "محمد", true},
+		{"digits in name", "Henry8", true},
+		{"only digits", "123", true},
+		{"newline rejected", "Al\nice", false},
+		{"tab rejected", "Al\tice", false},
+		{"semicolon rejected", "Alice;", false},
+		{"script injection rejected", "<script>", false},
+		{"korean name", "김철수", true},
+		{"japanese name", "田中", true},
+		{"name with double quote", `Nicolás "Zhang" Li`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isValidName(tt.input)
+			if got != tt.want {
+				t.Errorf("isValidName(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSubmitNameHandler(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	// Session with ending 3
+	session := &SessionData{
+		Ending1Count: 1,
+		Ending2Count: 1,
+		Ending3Count: 1,
+		Visits:       4,
+		LastVisit:    time.Now(),
+	}
+
+	body, _ := json.Marshal(submitNameRequest{Name: "Nicolás"})
+	req := httptest.NewRequest(http.MethodPost, "/submit-name", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	saveSession(rec, session)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rec = httptest.NewRecorder()
+	submitNameHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var resp submitNameResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if !resp.OK {
+		t.Errorf("expected ok=true, got ok=false (error: %s)", resp.Error)
+	}
+
+	// Verify session updated with Ending4Count
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == cookieName {
+			req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+			req2.AddCookie(c)
+			s := getSession(req2)
+			if s == nil {
+				t.Fatal("expected session to be set")
+			}
+			if s.Ending4Count != 1 {
+				t.Errorf("expected Ending4Count=1, got %d", s.Ending4Count)
+			}
+		}
+	}
+}
+
+func TestSubmitNameHandlerInvalidName(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	session := &SessionData{
+		Ending1Count: 1,
+		Ending2Count: 1,
+		Ending3Count: 1,
+		Visits:       4,
+		LastVisit:    time.Now(),
+	}
+
+	body, _ := json.Marshal(submitNameRequest{Name: "<script>alert(1)</script>"})
+	req := httptest.NewRequest(http.MethodPost, "/submit-name", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	saveSession(rec, session)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rec = httptest.NewRecorder()
+	submitNameHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var resp submitNameResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.OK {
+		t.Error("expected ok=false for invalid name")
+	}
+	if resp.Error == "" {
+		t.Error("expected error message for invalid name")
+	}
+}
+
+func TestSubmitNameHandlerRequiresEnding3(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	tests := []struct {
+		name    string
+		session *SessionData
+	}{
+		{"no session", nil},
+		{"no ending3", &SessionData{Ending1Count: 1, Ending2Count: 1, Ending3Count: 0}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(submitNameRequest{Name: "Alice"})
+			req := httptest.NewRequest(http.MethodPost, "/submit-name", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			if tt.session != nil {
+				rec := httptest.NewRecorder()
+				saveSession(rec, tt.session)
+				for _, c := range rec.Result().Cookies() {
+					req.AddCookie(c)
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			submitNameHandler(rec, req)
+
+			var resp submitNameResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+			if resp.OK {
+				t.Error("expected ok=false without ending 3 badge")
+			}
+		})
+	}
+}
+
+func TestSubmitNameHandlerMethodNotAllowed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/submit-name", nil)
+	rec := httptest.NewRecorder()
+	submitNameHandler(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status 405, got %d", rec.Code)
+	}
+}
+
+func TestCongratulations4HandlerRequiresEnding3(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	tests := []struct {
+		name    string
+		session *SessionData
+	}{
+		{"no session", nil},
+		{"no ending3", &SessionData{Ending1Count: 1, Ending2Count: 1, Ending3Count: 0}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/congratulations-4", nil)
+
+			if tt.session != nil {
+				rec := httptest.NewRecorder()
+				saveSession(rec, tt.session)
+				for _, c := range rec.Result().Cookies() {
+					req.AddCookie(c)
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			congratulations4Handler(rec, req)
+
+			if rec.Code != http.StatusFound {
+				t.Errorf("expected redirect (302), got %d", rec.Code)
+			}
+			loc := rec.Header().Get("Location")
+			if loc != "/" {
+				t.Errorf("expected redirect to /, got %q", loc)
+			}
+		})
+	}
+}
+
+func TestCongratulations4HandlerEnding4(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	session := &SessionData{
+		Ending1Count: 1,
+		Ending2Count: 1,
+		Ending3Count: 1,
+		Visits:       4,
+		LastVisit:    time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/congratulations-4", nil)
+	rec := httptest.NewRecorder()
+	saveSession(rec, session)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rec = httptest.NewRecorder()
+	congratulations4Handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Ending 4") {
+		t.Error("expected congratulations-4 page to contain 'Ending 4'")
+	}
+}
+
+func TestCongratulationsHandlerShowsNameFormAfterEnding3(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	session := &SessionData{
+		Ending1Count: 1,
+		Ending2Count: 1,
+		Visits:       3,
+		LastVisit:    time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/congratulations", nil)
+	rec := httptest.NewRecorder()
+	saveSession(rec, session)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rec = httptest.NewRecorder()
+	congratulationsHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "type your name:") {
+		t.Error("expected congratulations page to contain name form after reaching ending 3")
+	}
+}
+
+func TestMetricsHandlerIncludesEnding4(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	for _, e := range []int{1, 2, 3, 4} {
+		if err := recordEnding(e); err != nil {
+			t.Fatalf("recordEnding(%d) unexpected error: %v", e, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics/endings", nil)
+	rr := httptest.NewRecorder()
+	metricsHandler(rr, req)
+
+	var response struct {
+		Total int `json:"total"`
+		Data  []struct {
+			Timestamp time.Time `json:"timestamp"`
+			Ending    int       `json:"ending"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if response.Total != 4 {
+		t.Errorf("Expected total to be 4, got %d", response.Total)
+	}
+
+	foundEnding4 := false
+	for _, d := range response.Data {
+		if d.Ending == 4 {
+			foundEnding4 = true
+			break
+		}
+	}
+	if !foundEnding4 {
+		t.Error("Expected to find ending 4 in metrics data")
+	}
+}
+
+func TestRecordEndingInvalidEnding4Plus(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	err := recordEnding(5)
+	if err == nil {
+		t.Error("expected error for ending 5, got nil")
+	}
+}
+
+func TestNavCheckShowNameFormWithEnding3Badge(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	// Session with ending 3 badge
+	session := &SessionData{
+		Ending1Count: 1,
+		Ending2Count: 1,
+		Ending3Count: 1,
+		Visits:       4,
+		LastVisit:    time.Now(),
+	}
+
+	body, _ := json.Marshal(navCheckRequest{Type: "navigate"})
+	req := httptest.NewRequest(http.MethodPost, "/nav-check", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	saveSession(rec, session)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rec = httptest.NewRecorder()
+	navCheckHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var resp navCheckResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if !resp.ShowNameForm {
+		t.Error("expected show_name_form to be true when user has ending 3 badge")
+	}
+}
+
+func TestNavCheckNoNameFormWithoutEnding3Badge(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	tests := []struct {
+		name    string
+		session *SessionData
+	}{
+		{"no session", nil},
+		{"only endings 1 and 2", &SessionData{Ending1Count: 1, Ending2Count: 1, Ending3Count: 0}},
+		{"only ending 1", &SessionData{Ending1Count: 1, Ending2Count: 0, Ending3Count: 0}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(navCheckRequest{Type: "navigate"})
+			req := httptest.NewRequest(http.MethodPost, "/nav-check", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			if tt.session != nil {
+				rec := httptest.NewRecorder()
+				saveSession(rec, tt.session)
+				for _, c := range rec.Result().Cookies() {
+					req.AddCookie(c)
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			navCheckHandler(rec, req)
+
+			var resp navCheckResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+
+			if resp.ShowNameForm {
+				t.Error("expected show_name_form to be false without ending 3 badge")
+			}
+		})
+	}
+}
+
+func TestNavCheckShowNameFormOnReloadWithEnding3Badge(t *testing.T) {
+	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	// User with ending 3 reloads (they already won once, so HasWon=true)
+	session := &SessionData{
+		HasWon:       true,
+		Ending1Count: 1,
+		Ending2Count: 1,
+		Ending3Count: 1,
+		Visits:       5,
+		LastVisit:    time.Now(),
+	}
+
+	body, _ := json.Marshal(navCheckRequest{Type: "reload"})
+	req := httptest.NewRequest(http.MethodPost, "/nav-check", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	saveSession(rec, session)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rec = httptest.NewRecorder()
+	navCheckHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var resp navCheckResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if !resp.ShowNameForm {
+		t.Error("expected show_name_form to be true when user with ending 3 badge reloads")
+	}
+}
+
+func TestMainPageContainsNameFormHTML(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "name-form-section") {
+		t.Error("expected main page to contain name form section element")
+	}
+	if !strings.Contains(body, "type your name:") {
+		t.Error("expected main page to contain 'type your name:' label")
+	}
+	if !strings.Contains(body, "/submit-name") {
+		t.Error("expected main page to reference /submit-name endpoint")
+	}
+}
+
 func TestMetricsHandlerIncludesEnding3(t *testing.T) {
 	metrics = syncmap.NewStore(syncmap.DefaultOptions)
 

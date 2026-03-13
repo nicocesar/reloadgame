@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/syncmap"
@@ -21,6 +23,7 @@ type SessionData struct {
 	Ending1Count int       `json:"ending1_count"`
 	Ending2Count int       `json:"ending2_count"`
 	Ending3Count int       `json:"ending3_count"`
+	Ending4Count int       `json:"ending4_count"`
 	Visits       int       `json:"visits"`
 	LastVisit    time.Time `json:"last_visit"`
 }
@@ -30,8 +33,9 @@ type navCheckRequest struct {
 }
 
 type navCheckResponse struct {
-	Message     string `json:"message"`
-	ShowClickMe bool   `json:"show_click_me,omitempty"`
+	Message      string `json:"message"`
+	ShowClickMe  bool   `json:"show_click_me,omitempty"`
+	ShowNameForm bool   `json:"show_name_form,omitempty"`
 }
 
 var (
@@ -74,12 +78,47 @@ const pageTemplate = `<!DOCTYPE html>
 			color: #555;
 			text-decoration: underline;
 		}
+		.name-form {
+			margin-top: 1.5em;
+		}
+		.name-form label {
+			display: block;
+			margin-bottom: 0.4em;
+			color: #555;
+		}
+		.name-form input[type="text"] {
+			padding: 0.4em 0.6em;
+			font-size: 1em;
+			border: 1px solid #ccc;
+			border-radius: 4px;
+			width: 220px;
+		}
+		.name-form button {
+			display: block;
+			margin: 0.6em auto 0;
+			padding: 0.4em 1.2em;
+			font-size: 1em;
+			cursor: pointer;
+		}
+		.name-error {
+			color: #c00;
+			margin-top: 0.4em;
+			font-size: 0.9em;
+		}
 	</style>
 </head>
 <body>
 	<div class="container" id="content">
 		<h1 id="msg"></h1>
 		<a id="click-me" class="click-me" href="/congratulations" style="display:none">(or click on me)</a>
+		<div class="name-form" id="name-form-section" style="display:none">
+			<form id="name-form">
+				<label for="player-name">type your name:</label>
+				<input type="text" id="player-name" name="name" autocomplete="off" />
+				<button type="submit">Go</button>
+			</form>
+			<div class="name-error" id="name-error" style="display:none"></div>
+		</div>
 	</div>
 	<noscript><h1 style="opacity:1">JavaScript is required to play this game.</h1></noscript>
 	<script>
@@ -103,7 +142,32 @@ const pageTemplate = `<!DOCTYPE html>
 				if (data.show_click_me) {
 					document.getElementById('click-me').style.display = '';
 				}
+				if (data.show_name_form) {
+					document.getElementById('name-form-section').style.display = '';
+				}
 				document.getElementById('content').classList.add('visible');
+			});
+
+			var form = document.getElementById('name-form');
+			form.addEventListener('submit', function(e) {
+				e.preventDefault();
+				var name = document.getElementById('player-name').value;
+				var errEl = document.getElementById('name-error');
+				errEl.style.display = 'none';
+				fetch('/submit-name', {
+					method: 'POST',
+					headers: {'Content-Type': 'application/json'},
+					body: JSON.stringify({name: name})
+				})
+				.then(function(r) { return r.json(); })
+				.then(function(data) {
+					if (data.ok) {
+						window.location.href = '/congratulations-4';
+					} else {
+						errEl.textContent = data.error || 'Invalid name';
+						errEl.style.display = '';
+					}
+				});
 			});
 		})();
 	</script>
@@ -134,11 +198,122 @@ const congratulationsTemplate = `<!DOCTYPE html>
 		h1 {
 			margin-bottom: 0.2em;
 		}
+		.name-form {
+			margin-top: 1.5em;
+		}
+		.name-form label {
+			display: block;
+			margin-bottom: 0.4em;
+			color: #555;
+		}
+		.name-form input[type="text"] {
+			padding: 0.4em 0.6em;
+			font-size: 1em;
+			border: 1px solid #ccc;
+			border-radius: 4px;
+			width: 220px;
+		}
+		.name-form button {
+			display: block;
+			margin: 0.6em auto 0;
+			padding: 0.4em 1.2em;
+			font-size: 1em;
+			cursor: pointer;
+		}
+		.name-error {
+			color: #c00;
+			margin-top: 0.4em;
+			font-size: 0.9em;
+		}
 	</style>
 </head>
 <body>
 	<div class="container" id="content">
 		<h1>Congratulations! (Ending 3)</h1>
+		{{if .ShowNameForm}}
+		<div class="name-form">
+			<form id="name-form">
+				<label for="player-name">type your name:</label>
+				<input type="text" id="player-name" name="name" autocomplete="off" />
+				<button type="submit">Go</button>
+			</form>
+			<div class="name-error" id="name-error" style="display:none"></div>
+		</div>
+		{{end}}
+	</div>
+	<script>
+		(function() {
+			var navType = 'navigate';
+			try {
+				var entry = performance.getEntriesByType('navigation')[0];
+				if (entry && entry.type) {
+					navType = entry.type;
+				}
+			} catch(e) {}
+			if (navType === 'reload') {
+				window.location.replace('/');
+				return;
+			}
+			var el = document.getElementById('content');
+			el.classList.add('visible');
+
+			var form = document.getElementById('name-form');
+			if (form) {
+				form.addEventListener('submit', function(e) {
+					e.preventDefault();
+					var name = document.getElementById('player-name').value;
+					var errEl = document.getElementById('name-error');
+					errEl.style.display = 'none';
+					fetch('/submit-name', {
+						method: 'POST',
+						headers: {'Content-Type': 'application/json'},
+						body: JSON.stringify({name: name})
+					})
+					.then(function(r) { return r.json(); })
+					.then(function(data) {
+						if (data.ok) {
+							window.location.href = '/congratulations-4';
+						} else {
+							errEl.textContent = data.error || 'Invalid name';
+							errEl.style.display = '';
+						}
+					});
+				});
+			}
+		})();
+	</script>
+</body>
+</html>`
+
+const congratulations4Template = `<!DOCTYPE html>
+<html>
+<head>
+	<title>Reload Game - Congratulations! (Ending 4)</title>
+	<style>
+		body {
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			height: 100vh;
+			margin: 0;
+			font-family: Arial, sans-serif;
+		}
+		.container {
+			text-align: center;
+			opacity: 0;
+			transition: opacity 0.3s ease-in;
+		}
+		.container.visible {
+			opacity: 1;
+		}
+		h1 {
+			margin-bottom: 0.2em;
+		}
+	</style>
+</head>
+<body>
+	<div class="container" id="content">
+		<h1>Congratulations! (Ending 4)</h1>
 	</div>
 	<script>
 		(function() {
@@ -202,7 +377,7 @@ func saveSession(w http.ResponseWriter, session *SessionData) {
 }
 
 func recordEnding(ending int) error {
-	if ending < 1 || ending > 3 {
+	if ending < 1 || ending > 4 {
 		return fmt.Errorf("invalid ending: %d", ending)
 	}
 
@@ -236,7 +411,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 
 	records := []endingRecord{}
 
-	for _, ending := range []int{1, 2, 3} {
+	for _, ending := range []int{1, 2, 3, 4} {
 		key := "Ending" + strconv.Itoa(ending)
 		var item []time.Time
 		found, err := metrics.Get(key, &item)
@@ -266,6 +441,93 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// isValidName returns true if name is a valid player name.
+// Rules (relaxed to include more names rather than fewer):
+//   - Must not be empty
+//   - Each rune must be a letter (any script), digit, space, hyphen, apostrophe, or quote mark
+//
+// This allows names like: Nicolás, 张, O'Brian, Jean-Pierre, etc.
+func isValidName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		switch r {
+		case ' ', '-', '\'', '\u2019', '"', '\u201C', '\u201D', '.':
+			// space, hyphen, apostrophe (straight & curly), double-quote (straight & curly), period
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+type submitNameRequest struct {
+	Name string `json:"name"`
+}
+
+type submitNameResponse struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+func submitNameHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req submitNameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	if !isValidName(req.Name) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(submitNameResponse{OK: false, Error: "Name must only contain letters, digits, spaces, hyphens, apostrophes, or quotes."})
+		return
+	}
+
+	session := getSession(r)
+	// Only accessible if user has ending 3 badge
+	if session == nil || session.Ending3Count < 1 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(submitNameResponse{OK: false, Error: "You need to reach Ending 3 first."})
+		return
+	}
+
+	session.Ending4Count++
+	session.Visits++
+	session.LastVisit = time.Now()
+	if err := recordEnding(4); err != nil {
+		log.Printf("Error recording ending 4: %v", err)
+	}
+	saveSession(w, session)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(submitNameResponse{OK: true})
+}
+
+func congratulations4Handler(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r)
+
+	// Only accessible if user has ending 3 badge
+	if session == nil || session.Ending3Count < 1 {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, congratulations4Template)
+}
+
+var congratulationsTmpl = template.Must(template.New("congratulations").Parse(congratulationsTemplate))
+
 func congratulationsHandler(w http.ResponseWriter, r *http.Request) {
 	session := getSession(r)
 
@@ -289,13 +551,21 @@ func congratulationsHandler(w http.ResponseWriter, r *http.Request) {
 		Ending1Count: session.Ending1Count,
 		Ending2Count: session.Ending2Count,
 		Ending3Count: session.Ending3Count,
+		Ending4Count: session.Ending4Count,
 		Visits:       session.Visits,
-		LastVisit:     session.LastVisit,
+		LastVisit:    session.LastVisit,
 	}
 	saveSession(w, resetSession)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, congratulationsTemplate)
+	data := struct {
+		ShowNameForm bool
+	}{
+		ShowNameForm: resetSession.Ending3Count >= 1,
+	}
+	if err := congratulationsTmpl.Execute(w, data); err != nil {
+		log.Printf("Error rendering congratulations template: %v", err)
+	}
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -382,6 +652,10 @@ func navCheckHandler(w http.ResponseWriter, r *http.Request) {
 	if message == "Reload this page" && session != nil && session.Ending1Count >= 1 && session.Ending2Count >= 1 {
 		resp.ShowClickMe = true
 	}
+	// Show name form on main page when user has ending 3 badge
+	if session != nil && session.Ending3Count >= 1 {
+		resp.ShowNameForm = true
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -410,6 +684,8 @@ func main() {
 	mux.HandleFunc("/", handler)
 	mux.HandleFunc("/nav-check", navCheckHandler)
 	mux.HandleFunc("/congratulations", congratulationsHandler)
+	mux.HandleFunc("/congratulations-4", congratulations4Handler)
+	mux.HandleFunc("/submit-name", submitNameHandler)
 	mux.HandleFunc("/metrics/endings", metricsHandler)
 
 	log.Printf("listening on http://0.0.0.0%s", addr)
