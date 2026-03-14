@@ -390,6 +390,8 @@ func TestMetricsHandlerAuth(t *testing.T) {
 			t.Errorf("Expected status %d, got %d", http.StatusOK, rr.Code)
 		}
 	})
+}
+
 func TestNavCheckShowClickMeWhenBothEndingsDone(t *testing.T) {
 	metrics = syncmap.NewStore(syncmap.DefaultOptions)
 

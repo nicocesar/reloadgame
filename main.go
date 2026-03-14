@@ -15,6 +15,8 @@ import (
 	"unicode"
 
 	"github.com/philippgille/gokv"
+	"github.com/philippgille/gokv/datastore"
+	"github.com/philippgille/gokv/file"
 	"github.com/philippgille/gokv/syncmap"
 )
 
@@ -676,8 +678,49 @@ func navCheckHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func createStore() gokv.Store {
+	storageType := os.Getenv("STORAGE_TYPE")
+
+	switch storageType {
+	case "file":
+		dataDir := os.Getenv("DATA_DIR")
+		if dataDir == "" {
+			dataDir = "./data"
+		}
+		if err := os.MkdirAll(dataDir, 0755); err != nil {
+			log.Fatalf("Failed to create data directory: %v", err)
+		}
+		opts := file.DefaultOptions
+		opts.Directory = dataDir
+		store, err := file.NewStore(opts)
+		if err != nil {
+			log.Fatalf("Failed to create file store: %v", err)
+		}
+		log.Printf("Using file-based storage in %s", dataDir)
+		return store
+
+	case "datastore":
+		projectID := os.Getenv("GCP_PROJECT_ID")
+		if projectID == "" {
+			log.Fatal("GCP_PROJECT_ID is required for datastore storage")
+		}
+		opts := datastore.DefaultOptions
+		opts.ProjectID = projectID
+		store, err := datastore.NewClient(opts)
+		if err != nil {
+			log.Fatalf("Failed to create datastore client: %v", err)
+		}
+		log.Printf("Using GCP Datastore storage with project %s", projectID)
+		return store
+
+	default:
+		log.Printf("Using in-memory storage (STORAGE_TYPE not set to 'file' or 'datastore')")
+		return syncmap.NewStore(syncmap.DefaultOptions)
+	}
+}
+
 func main() {
-	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+	metrics = createStore()
 
 	metricsAuthToken = os.Getenv("METRICS_AUTH_TOKEN")
 	if metricsAuthToken == "" {
