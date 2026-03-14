@@ -108,9 +108,19 @@ const pageTemplate = `<!DOCTYPE html>
 			margin-top: 0.4em;
 			font-size: 0.9em;
 		}
+		#confetti-canvas {
+			position: fixed;
+			top: 0;
+			left: 0;
+			width: 100%;
+			height: 100%;
+			pointer-events: none;
+			z-index: 9999;
+		}
 	</style>
 </head>
 <body>
+	<canvas id="confetti-canvas"></canvas>
 	<div class="container" id="content">
 		<h1 id="msg"></h1>
 		<a id="click-me" class="click-me" href="/congratulations" style="display:none">(or click on me)</a>
@@ -126,6 +136,59 @@ const pageTemplate = `<!DOCTYPE html>
 	<noscript><h1 style="opacity:1">JavaScript is required to play this game.</h1></noscript>
 	<script>
 		(function() {
+			var confettiDuration = 2000;
+			var confettiStarted = false;
+			function startConfetti() {
+				if (confettiStarted) return;
+				confettiStarted = true;
+				var canvas = document.getElementById('confetti-canvas');
+				var ctx = canvas.getContext('2d');
+				canvas.width = window.innerWidth;
+				canvas.height = window.innerHeight;
+				var colors = ['#f00', '#0f0', '#00f', '#ff0', '#0ff', '#f0f', '#ffa500', '#800080'];
+				var particles = [];
+				var particleCount = 150;
+				for (var i = 0; i < particleCount; i++) {
+					particles.push({
+						x: Math.random() * canvas.width,
+						y: Math.random() * canvas.height - canvas.height,
+						size: Math.random() * 8 + 4,
+						color: colors[Math.floor(Math.random() * colors.length)],
+						speedY: Math.random() * 3 + 2,
+						speedX: Math.random() * 4 - 2,
+						rotation: Math.random() * 360,
+						rotationSpeed: Math.random() * 10 - 5
+					});
+				}
+				var startTime = Date.now();
+				function animate() {
+					var elapsed = Date.now() - startTime;
+					if (elapsed > confettiDuration) {
+						ctx.clearRect(0, 0, canvas.width, canvas.height);
+						return;
+					}
+					ctx.clearRect(0, 0, canvas.width, canvas.height);
+					for (var i = 0; i < particles.length; i++) {
+						var p = particles[i];
+						p.y += p.speedY;
+						p.x += p.speedX;
+						p.rotation += p.rotationSpeed;
+						if (p.y > canvas.height) {
+							p.y = -20;
+							p.x = Math.random() * canvas.width;
+						}
+						ctx.save();
+						ctx.translate(p.x, p.y);
+						ctx.rotate(p.rotation * Math.PI / 180);
+						ctx.fillStyle = p.color;
+						ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+						ctx.restore();
+					}
+					requestAnimationFrame(animate);
+				}
+				animate();
+			}
+
 			var navType = 'navigate';
 			try {
 				var entry = performance.getEntriesByType('navigation')[0];
@@ -149,6 +212,9 @@ const pageTemplate = `<!DOCTYPE html>
 					document.getElementById('name-form-section').style.display = '';
 				}
 				document.getElementById('content').classList.add('visible');
+				if (data.message.indexOf('Ending') !== -1) {
+					startConfetti();
+				}
 			});
 
 			var form = document.getElementById('name-form');
@@ -228,9 +294,19 @@ const congratulationsTemplate = `<!DOCTYPE html>
 			margin-top: 0.4em;
 			font-size: 0.9em;
 		}
+		#confetti-canvas {
+			position: fixed;
+			top: 0;
+			left: 0;
+			width: 100%;
+			height: 100%;
+			pointer-events: none;
+			z-index: 9999;
+		}
 	</style>
 </head>
 <body>
+	<canvas id="confetti-canvas"></canvas>
 	<div class="container" id="content">
 		<h1>Congratulations! (Ending 3)</h1>
 		{{if .ShowNameForm}}
@@ -246,6 +322,56 @@ const congratulationsTemplate = `<!DOCTYPE html>
 	</div>
 	<script>
 		(function() {
+			(function() {
+				var canvas = document.getElementById('confetti-canvas');
+				var ctx = canvas.getContext('2d');
+				canvas.width = window.innerWidth;
+				canvas.height = window.innerHeight;
+				var colors = ['#f00', '#0f0', '#00f', '#ff0', '#0ff', '#f0f', '#ffa500', '#800080'];
+				var particles = [];
+				var particleCount = 150;
+				for (var i = 0; i < particleCount; i++) {
+					particles.push({
+						x: Math.random() * canvas.width,
+						y: Math.random() * canvas.height - canvas.height,
+						size: Math.random() * 8 + 4,
+						color: colors[Math.floor(Math.random() * colors.length)],
+						speedY: Math.random() * 3 + 2,
+						speedX: Math.random() * 4 - 2,
+						rotation: Math.random() * 360,
+						rotationSpeed: Math.random() * 10 - 5
+					});
+				}
+				var startTime = Date.now();
+				var confettiDuration = 2000;
+				function animate() {
+					var elapsed = Date.now() - startTime;
+					if (elapsed > confettiDuration) {
+						ctx.clearRect(0, 0, canvas.width, canvas.height);
+						return;
+					}
+					ctx.clearRect(0, 0, canvas.width, canvas.height);
+					for (var i = 0; i < particles.length; i++) {
+						var p = particles[i];
+						p.y += p.speedY;
+						p.x += p.speedX;
+						p.rotation += p.rotationSpeed;
+						if (p.y > canvas.height) {
+							p.y = -20;
+							p.x = Math.random() * canvas.width;
+						}
+						ctx.save();
+						ctx.translate(p.x, p.y);
+						ctx.rotate(p.rotation * Math.PI / 180);
+						ctx.fillStyle = p.color;
+						ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+						ctx.restore();
+					}
+					requestAnimationFrame(animate);
+				}
+				animate();
+			})();
+
 			var navType = 'navigate';
 			try {
 				var entry = performance.getEntriesByType('navigation')[0];
@@ -312,14 +438,74 @@ const congratulations4Template = `<!DOCTYPE html>
 		h1 {
 			margin-bottom: 0.2em;
 		}
+		#confetti-canvas {
+			position: fixed;
+			top: 0;
+			left: 0;
+			width: 100%;
+			height: 100%;
+			pointer-events: none;
+			z-index: 9999;
+		}
 	</style>
 </head>
 <body>
+	<canvas id="confetti-canvas"></canvas>
 	<div class="container" id="content">
 		<h1>Congratulations! (Ending 4)</h1>
 	</div>
 	<script>
 		(function() {
+			(function() {
+				var canvas = document.getElementById('confetti-canvas');
+				var ctx = canvas.getContext('2d');
+				canvas.width = window.innerWidth;
+				canvas.height = window.innerHeight;
+				var colors = ['#f00', '#0f0', '#00f', '#ff0', '#0ff', '#f0f', '#ffa500', '#800080'];
+				var particles = [];
+				var particleCount = 150;
+				for (var i = 0; i < particleCount; i++) {
+					particles.push({
+						x: Math.random() * canvas.width,
+						y: Math.random() * canvas.height - canvas.height,
+						size: Math.random() * 8 + 4,
+						color: colors[Math.floor(Math.random() * colors.length)],
+						speedY: Math.random() * 3 + 2,
+						speedX: Math.random() * 4 - 2,
+						rotation: Math.random() * 360,
+						rotationSpeed: Math.random() * 10 - 5
+					});
+				}
+				var startTime = Date.now();
+				var confettiDuration = 2000;
+				function animate() {
+					var elapsed = Date.now() - startTime;
+					if (elapsed > confettiDuration) {
+						ctx.clearRect(0, 0, canvas.width, canvas.height);
+						return;
+					}
+					ctx.clearRect(0, 0, canvas.width, canvas.height);
+					for (var i = 0; i < particles.length; i++) {
+						var p = particles[i];
+						p.y += p.speedY;
+						p.x += p.speedX;
+						p.rotation += p.rotationSpeed;
+						if (p.y > canvas.height) {
+							p.y = -20;
+							p.x = Math.random() * canvas.width;
+						}
+						ctx.save();
+						ctx.translate(p.x, p.y);
+						ctx.rotate(p.rotation * Math.PI / 180);
+						ctx.fillStyle = p.color;
+						ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+						ctx.restore();
+					}
+					requestAnimationFrame(animate);
+				}
+				animate();
+			})();
+
 			var navType = 'navigate';
 			try {
 				var entry = performance.getEntriesByType('navigation')[0];
