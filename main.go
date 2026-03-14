@@ -39,9 +39,10 @@ type navCheckResponse struct {
 }
 
 var (
-	cookieName = "reloadgame_session"
-	metrics    gokv.Store
-	metricsMu  sync.Mutex
+	cookieName      = "reloadgame_session"
+	metrics         gokv.Store
+	metricsMu       sync.Mutex
+	metricsAuthToken string
 )
 
 const pageTemplate = `<!DOCTYPE html>
@@ -401,6 +402,20 @@ func recordEnding(ending int) error {
 }
 
 func metricsHandler(w http.ResponseWriter, r *http.Request) {
+	if metricsAuthToken != "" {
+		authHeader := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if len(authHeader) <= len(prefix) || authHeader[:len(prefix)] != prefix {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		token := authHeader[len(prefix):]
+		if token != metricsAuthToken {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	metricsMu.Lock()
 	defer metricsMu.Unlock()
 
@@ -663,6 +678,11 @@ func navCheckHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	metrics = syncmap.NewStore(syncmap.DefaultOptions)
+
+	metricsAuthToken = os.Getenv("METRICS_AUTH_TOKEN")
+	if metricsAuthToken == "" {
+		log.Printf("WARNING: METRICS_AUTH_TOKEN is not set; metrics endpoint is unprotected")
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
